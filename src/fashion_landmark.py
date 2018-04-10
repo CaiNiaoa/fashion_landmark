@@ -14,8 +14,8 @@ CKPT_MODEL_NAME = 'key_points_location.ckpt'  # 模型保存的名字
 LOG_PATH = './log/'  # 保存TensorBoard日志的地址，用来查看计算图和显示程序中可视化的参数
 
 BATCH_SIZE = 16
-LEARNING_RATE = 0.0001
-BATCH_NUM = 40000
+LEARNING_RATE = 0.001
+BATCH_NUM = 80000
 NUM_STAGE = 1
 
 #不同服饰存在的关键点标号
@@ -91,10 +91,10 @@ class Dataset():
 
     def get_minibatch(self, minibatch_ids):
         ''''''
-        labels = []
+        pos_labels = []
         images = []
         masks = [] #添加用于屏蔽标签为０的输出
-        visibles = []
+        vis_labels = []
 
         for i in minibatch_ids:
             image = load_image(self.train_image_ids[i], 'train')
@@ -107,21 +107,29 @@ class Dataset():
 
             #选取给定类别含有的关键点
             train_category_axis = train_category_axis[:,POINT_INDEX[self.category]]
-            train_category_axis[np.where(train_category_axis[:] == '-1_-1_-1')] = '0_0_0'
+            train_category_axis[np.where(train_category_axis[:] == '-1_-1_-1')] = '0_0_-1'
 
-            label = np.array([[int(int(xy.split('_')[0]) / image.shape[1] * 224), int(int(xy.split('_')[1]) / image.shape[0] * 224)] for xy in train_category_axis[0]])
+            pos = np.array([[int(int(xy.split('_')[0]) / image.shape[1] * 224), int(int(xy.split('_')[1]) / image.shape[0] * 224)] for xy in train_category_axis[0]])
 
-            visible = [int(vis.split('_')[2]) for vis in train_category_axis[0]]
+            #要注意vis的维度问题[bitch_size, output_num, 3]
+            vises = [int(vis.split('_')[2]) for vis in train_category_axis[0]]  #长度为output_num的list
+            vises_one_hot = []
+            #此处将-1,0,1转换为one_hot中0,1,2
+            for vis in vises:
+                vis_one_hot = np.zeros(3)
+                vis_one_hot[vis + 1] = 1
+                vises_one_hot.append(vis_one_hot)
 
             image = cv2.resize(image, (224, 224), interpolation=cv2.INTER_CUBIC)
             images.append(image)
-            labels.append(label.flatten())
 
-            label[np.where(label[::] != 0)] = 1
-            masks.append(label.flatten())
+            pos_labels.append(pos.flatten())
 
-            visibles.append(visible)
-        return images, labels, masks, visibles
+            pos[np.where(pos[::] != 0)] = 1
+            masks.append(pos.flatten())
+            vis_labels.append(vises_one_hot)
+
+        return images, pos_labels, masks, vis_labels
 
 def sub_inference(x, output_num, train_mode):
     conv1_1 = conv_layer(x, 3, 64, 3, 1, 'conv1_1', train_mode=train_mode)
@@ -162,28 +170,46 @@ def sub_inference(x, output_num, train_mode):
     fc7 = fc_layer(fc6, 4096, 4096, 'fc7', train_mode=train_mode)
     fc8_pos = fc_layer(fc7, 4096, output_num * 2, 'fc8_pos', bn=False, relu=False, dropout=False, train_mode=train_mode)
 
-    # fc8_vis = fc_layer(fc7, 4096, output_num, 'fc8_vis', bn=False, relu=False, sigmoid=True, dropout=False, train_mode=train_mode)
+    #此处新加可见性输出层 维度为[output_num, batch_size, 3]
+    visiblity = []
+    for i in range(output_num):
+        visiblity.append(fc_layer(fc7, 4096, 3, "fc_visiblity_" + str(i), bn=False, relu=False, dropout=False,
+                                  train_mode=train_mode))
 
-    return fc8_pos
+    return fc8_pos, tf.convert_to_tensor(visiblity)
 
 def inference(x, output_num, train_mode):
+    '''
+    forward propagation
+    :param x: data
+    :param output_num: category
+    :param train_mode: train_mode
+    :return: tuple(pos,visiblity)
+    '''
     with tf.variable_scope('stage_1'):
-        pos = sub_inference(x, output_num, train_mode)
-    return pos
+        prediction = sub_inference(x, output_num, train_mode)
+    return prediction
 
 
-def loss_func(pos, pos_, mask):
+def loss_func(prediction, output_num, pos_, vis_, mask):
 
-    loss_pos = tf.reduce_mean(tf.reduce_sum(tf.square(tf.subtract(tf.multiply(pos, mask), pos_)),axis=1) / 2, axis=0)
+    pos_loss = tf.reduce_mean(tf.reduce_sum(tf.square(tf.subtract(tf.multiply(prediction[0], mask), pos_)),axis=1) / 2, axis=0)
 
-    return loss_pos
+    vis_loss = 0
+    for i in range(output_num):
+        #此处标签维度问题，怀疑是tf操作不会使第二个维度消失
+        vis_loss += tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=prediction[1][i,:,:], labels=tf.argmax(vis_[:,i,:], 1)))
+
+    loss = pos_loss + vis_loss
+
+    return loss
 
 def train(dataset):
     output_num = len(POINT_INDEX[dataset.category])
 
     x = tf.placeholder(tf.float32, shape=[None, 224, 224, 3])
     pos_ = tf.placeholder(tf.float32, shape=[None, output_num * 2])
-    # vis_ = tf.placeholder(tf.int8, shape=[None, output_num])
+    vis_ = tf.placeholder(tf.int8, shape=[None, output_num, 3])
     train_mode = tf.placeholder(tf.bool)
     mask = tf.placeholder(tf.float32, shape= [None, output_num * 2])
 
@@ -191,10 +217,9 @@ def train(dataset):
     # vgg.build(x, train_mode)
     # print(vgg.get_var_count())
 
+    prediction = inference(x, output_num, train_mode)
 
-    pos= inference(x, output_num, train_mode)
-
-    loss = loss_func(pos, pos_, mask)
+    loss = loss_func(prediction, output_num, pos_, vis_, mask)
 
     with tf.name_scope("train_step"):
         global_step = tf.Variable(0, trainable=False)
@@ -216,10 +241,10 @@ def train(dataset):
         load_pretrain_model(pretrain_model_path, dataset.category, sess, saver, NUM_STAGE)
 
         for batch in range(BATCH_NUM + 1):
-            minibatch_X, minibatch_Y, minibatch_mask, minibatch_vis = dataset.get_minibatch(dataset.get_minibatch_ids())
+            minibatch_X, minibatch_pos, minibatch_mask, minibatch_vis = dataset.get_minibatch(dataset.get_minibatch_ids())
 
             _, temp_loss, step = sess.run([train_op, loss, global_step],
-                                          feed_dict={x: minibatch_X, pos_: minibatch_Y, mask: minibatch_mask,
+                                          feed_dict={x: minibatch_X, pos_: minibatch_pos, mask: minibatch_mask, vis_:minibatch_vis,
                                                     train_mode: True})
 
             if batch % 100 == 0:
@@ -288,7 +313,7 @@ def test(dataset):
 
 if __name__ == "__main__":
 
-    dataset = Dataset(DATASET_PATH, CATEGORY[0])
+    dataset = Dataset(DATASET_PATH, CATEGORY[4])
 
     # images, labels, masks, visibles = dataset.get_minibatch(dataset.get_minibatch_ids())
     # for i in range(0,10):
@@ -298,7 +323,7 @@ if __name__ == "__main__":
     #     print('visible: ', visibles[i])
     #     show_img(images[i],labels[i])
 
-    # train(dataset)
+    train(dataset)
 
 
     # test_image_ids,_ = dataset.load_csv('test')
@@ -308,5 +333,4 @@ if __name__ == "__main__":
     # cv2.imshow('1',img)
     # cv2.waitKey(0)
 
-    test(dataset)
-
+    # test(dataset)

@@ -12,6 +12,7 @@ import tensorflow as tf
 DEFAULT_PADDING = 'SAME'
 KEEP_PROB = 0.5
 
+
 def fc_layer(bottom, in_size, out_size, name, bn=True, relu=True,  dropout=True, train_mode=True):
     '''
     set fc_player
@@ -226,7 +227,7 @@ def load_pretrain_model(data_path, category, session, saver, num_stage):
 
 
 
-def save_npy(self, sess, npy_path="./save.npy"):
+def save_npy(sess, npy_path="./save.npy"):
     '''
     copy from vgg19.py
     :param self: class
