@@ -279,7 +279,7 @@ def test(dataset):
     test_image_ids, _ = dataset.load_csv('test')
 
     imgs = []
-    img_id = test_image_ids[160:180]
+    img_id = test_image_ids[150:180]
     for id in img_id:
         img = load_image(id,'test')
         assert (img.shape == (224, 224, 3))
