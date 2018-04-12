@@ -17,8 +17,6 @@ def load_image(image_id, filename):
     img =  cv2.imread(image_path)
     assert (img.all() != None)
 
-    if filename == 'test':
-        img = cv2.resize(img, (224, 224), interpolation=cv2.INTER_CUBIC)
 
     img  = img / 255.0
     assert (0<=img).all() and (img<=1.0).all()

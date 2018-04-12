@@ -14,7 +14,7 @@ CKPT_MODEL_NAME = 'key_points_location.ckpt'  # 模型保存的名字
 LOG_PATH = './log/'  # 保存TensorBoard日志的地址，用来查看计算图和显示程序中可视化的参数
 
 BATCH_SIZE = 16
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0001
 BATCH_NUM = 80000
 NUM_STAGE = 1
 
@@ -130,6 +130,8 @@ class Dataset():
             vis_labels.append(vises_one_hot)
 
         return images, pos_labels, masks, vis_labels
+
+######################################################################################################################
 
 def sub_inference(x, output_num, train_mode):
     conv1_1 = conv_layer(x, 3, 64, 3, 1, 'conv1_1', train_mode=train_mode)
@@ -250,23 +252,31 @@ def train(dataset):
             if batch % 100 == 0:
                 print("Cost after batch %i: %f" % (batch, temp_loss))
 
-            if batch % 10000 == 0 and batch != 0:
+            if batch % 5000 == 0 and batch != 0:
                 saver.save(sess, os.path.join(CKPT_MODEL_PATH + dataset.category, CKPT_MODEL_NAME), global_step=global_step)
                 print ('Save model at Batch_{:d}'.format(batch))
 
 
-def show_img(img,label):
+def show_img(img,pos, vis):
+
     #label = np.squeeze(label, axis=0)
-    label = np.array(label, np.int16)
-    label[np.where(label[:] < 20)] = 0
-    label[np.where(label[:] > 223)] = 223
+    pos = np.array(pos, np.int16)
+    pos[np.where(pos[:] < 20)] = 0
+    pos[np.where(pos[:] > 223)] = 223
 
-    for i in range(int(label.shape[0] / 2)):
+    vis = np.array(vis, np.int8).argmax(axis=1)
 
-        x,y = int(label[i * 2]), int(label[i * 2 + 1])
-        print('%dth key point:(%d, %d)'%(i+1, x, y))
+    for i in range(int(pos.shape[0] / 2)):
 
-        cv2.circle(img,(x,y), 2, (0,0,255),2)
+        x,y = int(pos[i * 2]), int(pos[i * 2 + 1])
+        print('%dth key point:(%d, %d) vis: %d' %(i+1, x, y, vis[i]-1))
+
+        if vis[i] == 2:
+            cv2.circle(img,(x,y), 2, (0,0,255),2)
+        if vis[i] == 1:
+            cv2.circle(img, (x,y), 2, (0,0,0),2)
+        if vis[i] == 0:
+            cv2.circle(img, (x,y), 2, (0,255,0),2)
 
     cv2.namedWindow('img')
     cv2.imshow('img', img)
@@ -279,9 +289,13 @@ def test(dataset):
     test_image_ids, _ = dataset.load_csv('test')
 
     imgs = []
-    img_id = test_image_ids[150:180]
+    img_id = test_image_ids[10:20]
+    imgs_shape = []
     for id in img_id:
         img = load_image(id,'test')
+        imgs_shape.append(img.shape[:1])
+
+        img = cv2.resize(img, (224, 224), interpolation=cv2.INTER_CUBIC)
         assert (img.shape == (224, 224, 3))
 
         # image = np.reshape(img, (1, 224, 224, 3))
@@ -303,17 +317,19 @@ def test(dataset):
             print('load parameters from '+ ckpt.model_checkpoint_path)
             saver.restore(sess, ckpt.model_checkpoint_path)
 
-            pos = sess.run(y, feed_dict={x:imgs, train_mode:False})
+            prediction = sess.run(y, feed_dict={x:imgs, train_mode:False})
 
             for i in range(len(img_id)):
                 print(img_id[i])
-                show_img(imgs[i],pos[i,:])
+
+                show_img(imgs[i], prediction[0][i,:], prediction[1][:,i,:])
+
 
 
 
 if __name__ == "__main__":
 
-    dataset = Dataset(DATASET_PATH, CATEGORY[4])
+    dataset = Dataset(DATASET_PATH, CATEGORY[1])
 
     # images, labels, masks, visibles = dataset.get_minibatch(dataset.get_minibatch_ids())
     # for i in range(0,10):
@@ -323,7 +339,7 @@ if __name__ == "__main__":
     #     print('visible: ', visibles[i])
     #     show_img(images[i],labels[i])
 
-    train(dataset)
+    # train(dataset)
 
 
     # test_image_ids,_ = dataset.load_csv('test')
